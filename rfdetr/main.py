@@ -441,7 +441,9 @@ class Model:
             log_stats['epoch_time'] = epoch_time_str
             if args.output_dir and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
+                    # 写入格式化的 JSON,便于阅读
+                    # 每个 epoch 的 JSON 对象之间用空行分隔,保持可读性
+                    f.write(json.dumps(log_stats, indent=2, ensure_ascii=False) + "\n\n")
 
                 # for evaluation logs
                 if coco_evaluator is not None:

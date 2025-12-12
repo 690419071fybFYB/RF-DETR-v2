@@ -623,8 +623,7 @@ def benchmark(model, dataset, output_dir):
     output_file = os.path.join(output_dir, "flops", "log.txt")
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with (output_dir / "log.txt").open("a") as f:
-        f.write("Test benchmark on Val Dataset" + "\n")
-        f.write(json.dumps(_outputs, indent=2) + "\n")
+        f.write(json.dumps(_outputs, indent=2, ensure_ascii=False) + "\n\n")
 
     return _outputs
 

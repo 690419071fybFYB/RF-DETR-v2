@@ -216,25 +216,7 @@ class MetricLogger(object):
         iter_time = SmoothedValue(fmt='{avg:.4f}')
         data_time = SmoothedValue(fmt='{avg:.4f}')
         space_fmt = ':' + str(len(str(len(iterable)))) + 'd'
-        if torch.cuda.is_available():
-            log_msg = self.delimiter.join([
-                header,
-                '[{0' + space_fmt + '}/{1}]',
-                'eta: {eta}',
-                '{meters}',
-                'time: {time}',
-                'data: {data}',
-                'max mem: {memory:.0f}'
-            ])
-        else:
-            log_msg = self.delimiter.join([
-                header,
-                '[{0' + space_fmt + '}/{1}]',
-                'eta: {eta}',
-                '{meters}',
-                'time: {time}',
-                'data: {data}'
-            ])
+        
         MB = 1024.0 * 1024.0
         for obj in iterable:
             data_time.update(time.time() - end)
@@ -247,23 +229,82 @@ class MetricLogger(object):
                     if is_main_process():
                         log_dict = {k: v.value for k, v in self.meters.items()}
                         self.wandb.log(log_dict)
-                if torch.cuda.is_available():
-                    print(log_msg.format(
-                        i, len(iterable), eta=eta_string,
-                        meters=str(self),
-                        time=str(iter_time), data=str(data_time),
-                        memory=torch.cuda.max_memory_allocated() / MB))
-                else:
-                    print(log_msg.format(
-                        i, len(iterable), eta=eta_string,
-                        meters=str(self),
-                        time=str(iter_time), data=str(data_time)))
+                
+                # 格式化输出 - 分组显示指标
+                self._print_formatted_metrics(
+                    header, i, len(iterable), eta_string, 
+                    iter_time, data_time, MB
+                )
             i += 1
             end = time.time()
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print('{} Total time: {} ({:.4f} s / it)'.format(
             header, total_time_str, total_time / len(iterable)))
+    
+    def _print_formatted_metrics(self, header, iteration, total, eta_string, iter_time, data_time, MB):
+        """格式化打印训练指标,分组显示以提高可读性"""
+        
+        # 基本信息行
+        space_fmt = ':' + str(len(str(total))) + 'd'
+        basic_info = f"{header} [{iteration:{space_fmt[1:]}}/{total}]  eta: {eta_string}  "
+        basic_info += f"time: {iter_time}  data: {data_time}"
+        if torch.cuda.is_available():
+            basic_info += f"  max mem: {torch.cuda.max_memory_allocated() / MB:.0f}"
+        print(basic_info)
+        
+        # 将指标分组
+        main_metrics = {}      # 主要指标: lr, class_error, loss
+        decoder_metrics = {}   # 解码器层损失
+        encoder_metrics = {}   # 编码器损失
+        unscaled_metrics = {}  # 未缩放的指标
+        other_metrics = {}     # 其他指标
+        
+        for name, meter in self.meters.items():
+            if name in ['lr', 'class_error', 'loss']:
+                main_metrics[name] = meter
+            elif '_enc' in name and 'unscaled' not in name:
+                encoder_metrics[name] = meter
+            elif ('_0' in name or '_1' in name) and 'unscaled' not in name:
+                decoder_metrics[name] = meter
+            elif 'unscaled' in name or 'cardinality' in name:
+                unscaled_metrics[name] = meter
+            elif 'unscaled' not in name:
+                # 主损失组件 (loss_ce, loss_bbox, loss_giou)
+                main_metrics[name] = meter
+            else:
+                other_metrics[name] = meter
+        
+        # 打印主要指标
+        if main_metrics:
+            metrics_str = "  ".join([f"{name}: {str(meter)}" for name, meter in main_metrics.items()])
+            print(f"  [主要指标] {metrics_str}")
+        
+        # 打印解码器层指标
+        if decoder_metrics:
+            # 分层显示
+            layer_0_metrics = {k: v for k, v in decoder_metrics.items() if '_0' in k}
+            layer_1_metrics = {k: v for k, v in decoder_metrics.items() if '_1' in k}
+            
+            if layer_0_metrics:
+                metrics_str = "  ".join([f"{name}: {str(meter)}" for name, meter in layer_0_metrics.items()])
+                print(f"  [解码器层0] {metrics_str}")
+            
+            if layer_1_metrics:
+                metrics_str = "  ".join([f"{name}: {str(meter)}" for name, meter in layer_1_metrics.items()])
+                print(f"  [解码器层1] {metrics_str}")
+        
+        # 打印编码器指标
+        if encoder_metrics:
+            metrics_str = "  ".join([f"{name}: {str(meter)}" for name, meter in encoder_metrics.items()])
+            print(f"  [编码器] {metrics_str}")
+        
+        # 不打印未缩放指标,它们通常用于调试
+        # 如果需要查看,可以取消下面的注释
+        # if unscaled_metrics:
+        #     print(f"  [未缩放指标] (共 {len(unscaled_metrics)} 项)")
+        
+        print()  # 空行分隔不同的迭代
 
 
 def get_sha():
