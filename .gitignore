@@ -179,4 +179,17 @@ cython_debug/
 rf-detr*
 output/*
 
+# PyTorch model checkpoints and weights
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Training outputs and results
+results/
+checkpoints/
+runs/
+logs/
+wandb/
+
 train_test.py
