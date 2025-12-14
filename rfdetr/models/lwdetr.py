@@ -35,6 +35,7 @@ from rfdetr.models.backbone import build_backbone
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.transformer import build_transformer
 from rfdetr.models.segmentation_head import SegmentationHead, get_uncertain_point_coords_with_randomness, point_sample
+from rfdetr.models.density_module import DensityPredictor, DensityGuidedQueryEnhancer, DensityMapGenerator
 
 class LWDETR(nn.Module):
     """ This is the Group DETR v3 module that performs object detection """
@@ -48,7 +49,9 @@ class LWDETR(nn.Module):
                  group_detr=1,
                  two_stage=False,
                  lite_refpoint_refine=False,
-                 bbox_reparam=False):
+                 bbox_reparam=False,
+                 use_density_guidance=False,
+                 density_hidden_dim=256):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -104,6 +107,21 @@ class LWDETR(nn.Module):
                 [copy.deepcopy(self.class_embed) for _ in range(group_detr)])
 
         self._export = False
+        
+        # 密度引导模块
+        self.use_density_guidance = use_density_guidance
+        if self.use_density_guidance:
+            # 密度预测器(从S3/S4/S5预测密度图)
+            self.density_predictor = DensityPredictor(
+                in_channels=[hidden_dim, hidden_dim, hidden_dim],
+                hidden_dim=density_hidden_dim,
+                output_stride=16
+            )
+            # 查询增强器
+            self.density_query_enhancer = DensityGuidedQueryEnhancer(
+                hidden_dim=hidden_dim,
+                num_feature_levels=len(self.backbone.num_channels) if hasattr(self.backbone, 'num_channels') else 4
+            )
 
     def reinitialize_detection_head(self, num_classes):
         base = self.class_embed.weight.shape[0]
@@ -162,6 +180,35 @@ class LWDETR(nn.Module):
             # only use one group in inference
             refpoint_embed_weight = self.refpoint_embed.weight[:self.num_queries]
             query_feat_weight = self.query_feat.weight[:self.num_queries]
+        
+        # \u5bc6\u5ea6\u5f15\u5bfc\u6a21\u5757
+        density_map = None
+        if self.use_density_guidance:
+            # \u4f7f\u7528S3,S4,S5\u7279\u5f81\u9884\u6d4b\u5bc6\u5ea6\u56fe
+            # features\u7684\u987a\u5e8f\u901a\u5e38\u662f [P3, P4, P5, P6],\u6211\u4eec\u53d6\u524d3\u4e2a
+            density_features = srcs[:3] if len(srcs) >= 3 else srcs
+            density_map = self.density_predictor(density_features)  # [B, 1, H/16, W/16]
+            
+            # \u4f7f\u7528\u5bc6\u5ea6\u56fe\u589e\u5f3aquery\u4f4d\u7f6e\u7f16\u7801(\u5728transformer\u4f7f\u7528\u4e4b\u524d)
+            # \u9996\u5148\u9700\u8981\u5c06refpoint_embed_weight\u590d\u5236\u5230batch
+            bs = srcs[0].shape[0]
+            refpoint_embed_batch = refpoint_embed_weight.unsqueeze(0).repeat(bs, 1, 1)
+            
+            # \u751f\u6210query\u4f4d\u7f6e\u7f16\u7801(\u57fa\u4e8esine embedding)
+            from rfdetr.models.transformer import gen_sineembed_for_position
+            query_sine_embed = gen_sineembed_for_position(refpoint_embed_batch, self.transformer.d_model // 2)
+            query_pos = query_sine_embed  # \u7b80\u5316,\u76f4\u63a5\u4f7f\u7528sine embedding
+            
+            # \u5e94\u7528\u5bc6\u5ea6\u589e\u5f3a
+            query_pos_enhanced = self.density_query_enhancer(
+                query_pos, density_map, refpoint_embed_batch[..., :2]  # \u53ea\u4f7f\u7528cx,cy
+            )
+            
+            # \u5c06\u589e\u5f3a\u540e\u7684\u4f4d\u7f6e\u7f16\u7801\u5b58\u50a8(\u5907\u7528,\u5f53\u524d\u4e0d\u76f4\u63a5\u4f7f\u7528)
+            # \u56e0\u4e3atransformer\u81ea\u5df1\u4f1a\u91cd\u65b0\u8ba1\u7b97query_pos
+            # \u6240\u4ee5\u6211\u4eec\u901a\u8fc7\u8c03\u6574refpoint_embed\u6765\u95f4\u63a5\u5f71\u54cd
+            # \u8fd9\u91cc\u91c7\u7528\u66f4\u76f4\u63a5\u7684\u65b9\u5f0f:\u5c06query_feat\u589e\u5f3a
+            query_feat_weight = query_feat_weight + query_pos_enhanced.mean(0)  # \u5e73\u5747\u5230batch\u7ef4\u5ea6
 
         hs, ref_unsigmoid, hs_enc, ref_enc = self.transformer(
             srcs, masks, poss, refpoint_embed_weight, query_feat_weight)
@@ -185,6 +232,8 @@ class LWDETR(nn.Module):
             out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
             if self.segmentation_head is not None:
                 out['pred_masks'] = outputs_masks[-1]
+            if self.use_density_guidance and density_map is not None:
+                out['pred_density'] = density_map
             if self.aux_loss:
                 out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord, outputs_masks if self.segmentation_head is not None else None)
 
@@ -317,6 +366,7 @@ class SetCriterion(nn.Module):
         self.use_position_supervised_loss = use_position_supervised_loss
         self.ia_bce_loss = ia_bce_loss
         self.mask_point_sample_ratio = mask_point_sample_ratio
+        self.density_sigma = 8.0  # 密度图高斐核参数
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (Binary focal loss)
@@ -503,6 +553,39 @@ class SetCriterion(nn.Module):
         del target_masks
         return losses
     
+    def loss_density(self, outputs, targets, indices, num_boxes):
+        """计算密度预测损失
+        使用MSE损失监督预测的密度图与GT密度图
+        """
+        if 'pred_density' not in outputs:
+            # 如果模型没有预测密度图,返回0损失
+            return {'loss_density': outputs['pred_logits'].sum() * 0.0}
+        
+        pred_density = outputs['pred_density']  # [B, 1, H, W]
+        device = pred_density.device
+        B, _, H, W = pred_density.shape
+        
+        # 为每个batch生成GT密度图
+        from rfdetr.models.density_module import DensityMapGenerator
+        gt_density_maps = []
+        
+        for target in targets:
+            boxes = target['boxes']  # [N, 4] 归一化的(cx, cy, w, h)
+            labels = target['labels']  # [N]
+            
+            # 生成密度图
+            density_map = DensityMapGenerator.generate_density_map(
+                boxes, labels, (H, W), sigma=self.density_sigma, normalize=True
+            )
+            gt_density_maps.append(density_map)
+        
+        gt_density = torch.stack(gt_density_maps).unsqueeze(1).to(device)  # [B, 1, H, W]
+        
+        # 计算MSE损失
+        loss_density = F.mse_loss(pred_density, gt_density, reduction='mean')
+        
+        return {'loss_density': loss_density}
+ 
  
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
@@ -522,6 +605,7 @@ class SetCriterion(nn.Module):
             'cardinality': self.loss_cardinality,
             'boxes': self.loss_boxes,
             'masks': self.loss_masks,
+            'density': self.loss_density,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -825,6 +909,8 @@ def build_model(args):
         two_stage=args.two_stage,
         lite_refpoint_refine=args.lite_refpoint_refine,
         bbox_reparam=args.bbox_reparam,
+        use_density_guidance=getattr(args, 'use_density_guidance', False),
+        density_hidden_dim=getattr(args, 'density_hidden_dim', 256),
     )
     return model
 
@@ -836,6 +922,8 @@ def build_criterion_and_postprocessors(args):
     if args.segmentation_head:
         weight_dict['loss_mask_ce'] = args.mask_ce_loss_coef
         weight_dict['loss_mask_dice'] = args.mask_dice_loss_coef
+    if getattr(args, 'use_density_guidance', False):
+        weight_dict['loss_density'] = getattr(args, 'density_loss_coef', 0.5)
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -848,6 +936,8 @@ def build_criterion_and_postprocessors(args):
     losses = ['labels', 'boxes', 'cardinality']
     if args.segmentation_head:
         losses.append('masks')
+    if getattr(args, 'use_density_guidance', False):
+        losses.append('density')
 
     try:
         sum_group_losses = args.sum_group_losses
