@@ -209,6 +209,16 @@ def coco_extended_metrics(coco_eval):
     score_thr = float(np.nanmean(score_vec))
 
     map_50_95, map_50 = float(coco_eval.stats[0]), float(coco_eval.stats[1])
+    map_75 = float(coco_eval.stats[2])
+    map_small = float(coco_eval.stats[3])
+    map_medium = float(coco_eval.stats[4])
+    map_large = float(coco_eval.stats[5])
+    ar_1 = float(coco_eval.stats[6])
+    ar_10 = float(coco_eval.stats[7])
+    ar_100 = float(coco_eval.stats[8])
+    ar_small = float(coco_eval.stats[9])
+    ar_medium = float(coco_eval.stats[10])
+    ar_large = float(coco_eval.stats[11])
 
     per_class = []
     cat_ids = coco_eval.params.catIds
@@ -238,6 +248,16 @@ def coco_extended_metrics(coco_eval):
         "class"     : "all",
         "map@50:95" : map_50_95,
         "map@50"    : map_50,
+        "map@75"    : map_75,
+        "map_small" : map_small,
+        "map_medium": map_medium,
+        "map_large" : map_large,
+        "ar@1"      : ar_1,
+        "ar@10"     : ar_10,
+        "ar@100"    : ar_100,
+        "ar_small"  : ar_small,
+        "ar_medium" : ar_medium,
+        "ar_large"  : ar_large,
         "precision" : macro_precision,
         "recall"    : macro_recall,
     })
