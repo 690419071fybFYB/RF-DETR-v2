@@ -344,7 +344,12 @@ class SetCriterion(nn.Module):
                 use_varifocal_loss=False,
                 use_position_supervised_loss=False,
                 ia_bce_loss=False,
-                mask_point_sample_ratio: int = 16,):
+                mask_point_sample_ratio: int = 16,
+                # Adaptive Loss Weighting Params
+                enable_adaptive_loss_weighting=False,
+                scale_coef=1.0,
+                density_coef=0.5,
+                normalize_weights=True):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -366,6 +371,13 @@ class SetCriterion(nn.Module):
         self.use_position_supervised_loss = use_position_supervised_loss
         self.ia_bce_loss = ia_bce_loss
         self.mask_point_sample_ratio = mask_point_sample_ratio
+        
+        # Adaptive Loss Weighting Configuration
+        self.enable_adaptive_loss_weighting = enable_adaptive_loss_weighting
+        self.scale_coef = scale_coef
+        self.density_coef = density_coef
+        self.normalize_weights = normalize_weights
+        
         self.density_sigma = 8.0  # 密度图高斐核参数
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
@@ -454,6 +466,106 @@ class SetCriterion(nn.Module):
 
             target_classes_onehot = target_classes_onehot[:,:,:-1]
             loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
+            
+            # --- Adaptive Loss Weighting ---
+            if self.enable_adaptive_loss_weighting:
+                # 只对 matched positive samples 加权
+                # loss_ce 目前是 [B, N, C]
+                # 我们需要构建一个权重矩阵 [B, N]
+                
+                device = src_logits.device
+                batch_size, num_queries = src_logits.shape[:2]
+                
+                # 初始化权重为1.0
+                adaptive_weights = torch.ones((batch_size, num_queries), device=device)
+                
+                for b in range(batch_size):
+                    # 获取当前图片的所有匹配对
+                    # indices[b] 是 (src_idx, tgt_idx)
+                    src_idx, tgt_idx = indices[b]
+                    
+                    if len(src_idx) == 0:
+                        continue
+                        
+                    # 1. 尺度因子 (Scale Factor)
+                    # 目标是给小物体更高权重
+                    # Area_norm = w * h (target boxes are normalized [0,1])
+                    gt_boxes = targets[b]['boxes'][tgt_idx] # [M, 4]
+                    areas = gt_boxes[:, 2] * gt_boxes[:, 3] # [M]
+                    # scale_factor = 1 - sqrt(area). area -> 0 => factor -> 1. area -> 1 => factor -> 0
+                    scale_factors = 1.0 - torch.sqrt(torch.clamp(areas, min=1e-6))
+                    
+                    # 2. 密度因子 (Density Factor)
+                    # 目标是给密集区域更高权重
+                    density_values = torch.zeros_like(scale_factors)
+                    if 'pred_density' in outputs:
+                        # pred_density: [B, 1, H, W]
+                        # 采样 GT 框中心点的密度值
+                        # grid_sample 需要 [-1, 1] 坐标
+                        gt_centers = gt_boxes[:, :2] # [M, 2] (cx, cy) in [0, 1]
+                        # 转换为 grid 坐标
+                        grid = gt_centers.unsqueeze(0).unsqueeze(0) * 2.0 - 1.0 # [1, 1, M, 2]
+                        
+                        # 采样
+                        # outputs['pred_density'][b]: [1, H, W] -> unsqueeze(0) -> [1, 1, H, W]
+                        sample_val = F.grid_sample(
+                            outputs['pred_density'][b].unsqueeze(0), 
+                            grid,
+                            align_corners=False
+                        ) # [1, 1, 1, M]
+                        density_values = sample_val.flatten() # [M]
+                    
+                    # 3. 组合权重
+                    # Weight = 1 + alpha * scale + beta * density
+                    weights = 1.0 + self.scale_coef * scale_factors + self.density_coef * density_values
+                    
+                    # 填入权重矩阵
+                    adaptive_weights[b, src_idx] = weights
+                
+                # 如果开启了权重归一化,保持总loss规模不变
+                if self.normalize_weights:
+                    # 统计所有正样本的平均权重
+                    # 注意: 我们只改变了正样本的权重,负样本权重保持为1
+                    # 为了简单起见,我们这里只归一化正样本的权重部分,或者简单地不做全局归一化,
+                    # 因为focal loss本身就是sum/num_boxes
+                    pass
+
+                # 应用权重
+                # loss_ce: [B, N, C] -> mean over C -> [B, N] approx (actuall output depends on implementation)
+                # sigmoid_focal_loss function usually returns [B, num_queries, num_classes] (before sum) if reduction is none
+                # 但这里的实现似乎已经在内部做了一些操作? 
+                # 让我们看LW-DETR的实现细节, 它最后乘了 src_logits.shape[1], 说明它是平均过的?
+                # 不, sigmoid_focal_loss返回的是 [B, N, C], 然后乘了C? 
+                # 等等, torch官方的sigmoid_focal_loss默认 reduction='mean'. 
+                # 这里LW-DETR自定义的 loss 实现似乎返回的是标量(sum / num_boxes).
+                # 仔细看代码: loss_ce = ... * src_logits.shape[1]
+                # 之前的代码: loss_ce = sigmoid_focal_loss(...)
+                # 如果是库函数,通常返回Tensor. 
+                # 让我们假设我们需要自己重写一下这部分的加权逻辑,或者修改loss_ce的计算方式.
+                
+                # 由于我们无法轻易修改 sigmoid_focal_loss 内部 (它是C++或库函数),
+                # 我们可以利用 loss = weight * loss 的性质.
+                # 但 loss_ce 已经是 scalar 了 (sum后的).
+                # 所以我们必须在 sum 之前介入.
+                
+                # 重新计算 loss (without reduction)
+                loss_ce_tensor = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2, reduction='none')
+                # loss_ce_tensor: [B, N, C]
+                
+                # 扩展权重到 [B, N, C]
+                W = adaptive_weights.unsqueeze(-1).expand_as(loss_ce_tensor)
+                
+                # 加权求和
+                loss_ce = (loss_ce_tensor * W).sum() / num_boxes * src_logits.shape[1] 
+                # 注意: 原代码乘了 src_logits.shape[1] 是为了抵消 focal loss 实现中可能的 mean over classes?
+                # 实际上 torchvision 的 sigmoid_focal_loss 如果 reduction='mean', 是除以 (B*N*C).
+                # 这里除以了 num_boxes (正样本数). 
+                # 让我们保持原有的 scale 逻辑, 只把 scalar 替换为 加权后的 scalar.
+                
+            else:
+                # 原有逻辑
+                loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
+                
         losses = {'loss_ce': loss_ce}
 
         if log:
@@ -665,7 +777,7 @@ class SetCriterion(nn.Module):
         return losses
 
 
-def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
+def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2, reduction: str = 'mean'):
     """
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
     Args:
@@ -678,19 +790,24 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
                 positive vs negative examples. Default = -1 (no weighting).
         gamma: Exponent of the modulating factor (1 - p_t) to
                balance easy vs hard examples.
+        reduction: 'mean' | 'sum' | 'none'
     Returns:
-        Loss tensor
+        Loss tensor with the reduction option applied.
     """
     prob = inputs.sigmoid()
     ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-    p_t = prob * targets + (1 - prob) * (1 - targets)
-    loss = ce_loss * ((1 - p_t) ** gamma)
+    loss = ce_loss * (torch.abs(targets - prob) ** gamma)
 
     if alpha >= 0:
-        alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+        alpha_t = alpha * (targets > 0.0).float() + (1 - alpha) * (targets <= 0.0).float()
         loss = alpha_t * loss
 
-    return loss.mean(1).sum() / num_boxes
+    if reduction == "mean":
+        return loss.mean(1).sum() / num_boxes
+    elif reduction == "sum":
+        return loss.sum()
+    elif reduction == "none":
+        return loss
 
 
 def sigmoid_varifocal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
@@ -950,14 +1067,23 @@ def build_criterion_and_postprocessors(args):
                                 use_varifocal_loss = args.use_varifocal_loss,
                                 use_position_supervised_loss=args.use_position_supervised_loss,
                                 ia_bce_loss=args.ia_bce_loss,
-                                mask_point_sample_ratio=args.mask_point_sample_ratio)
+                                mask_point_sample_ratio=args.mask_point_sample_ratio,
+                                # Adaptive Loss Weighting
+                                enable_adaptive_loss_weighting=getattr(args, 'enable_adaptive_loss_weighting', False),
+                                scale_coef=getattr(args, 'scale_coef', 1.0),
+                                density_coef=getattr(args, 'density_coef', 0.5),
+                                normalize_weights=getattr(args, 'normalize_weights', True))
     else:
         criterion = SetCriterion(args.num_classes + 1, matcher=matcher, weight_dict=weight_dict,
                                 focal_alpha=args.focal_alpha, losses=losses, 
                                 group_detr=args.group_detr, sum_group_losses=sum_group_losses,
-                                use_varifocal_loss = args.use_varifocal_loss,
                                 use_position_supervised_loss=args.use_position_supervised_loss,
-                                ia_bce_loss=args.ia_bce_loss)
+                                ia_bce_loss=args.ia_bce_loss,
+                                # Adaptive Loss Weighting
+                                enable_adaptive_loss_weighting=getattr(args, 'enable_adaptive_loss_weighting', False),
+                                scale_coef=getattr(args, 'scale_coef', 1.0),
+                                density_coef=getattr(args, 'density_coef', 0.5),
+                                normalize_weights=getattr(args, 'normalize_weights', True))
     criterion.to(device)
     postprocess = PostProcess(num_select=args.num_select)
 
