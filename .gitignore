@@ -186,7 +186,6 @@ output/*
 *.safetensors
 
 # Training outputs and results
-results/
 checkpoints/
 runs/
 logs/

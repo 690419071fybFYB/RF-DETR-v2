@@ -12,13 +12,13 @@ model = RFDETRBase()
 # 启用密度引导的训练配置
 model.train(
     dataset_file='coco',
-    dataset_dir='/home/fyb/datasets/UCAS_AOD_COCO',
-    coco_path='/home/fyb/datasets/UCAS_AOD_COCO',
+    dataset_dir='/root/RSOD_cocoFormat/',
+    coco_path='/root/RSOD_cocoFormat/',
     
     # 基础训练参数
-    epochs=5,
-    batch_size=4,
-    grad_accum_steps=1,
+    epochs=50,
+    batch_size=12,
+    grad_accum_steps=2,
     lr=1e-4,
     num_workers=2,
     
@@ -28,7 +28,7 @@ model.train(
     density_loss_coef=0.5,               # 密度损失权重
     
     # 输出目录
-    output_dir='results/3density_guided_UCAS_AOD',
+    output_dir='results/3density_guided_RSOD',
     
     # 其他参数
     num_classes=2,  # UCAS-AOD has 2 classes (car, plane)
