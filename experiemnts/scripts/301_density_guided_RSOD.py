@@ -28,8 +28,8 @@ model.train(
     density_loss_coef=0.5,               # 密度损失权重
     
     # 输出目录
-    output_dir='results/301_density_guided_RSOD',
+    output_dir='results/301density_guided_RSOD',
     
     # 其他参数
-    num_classes=4,  # UCAS-AOD has 2 classes (car, plane)
+    num_classes=2,  # UCAS-AOD has 2 classes (car, plane)
 )

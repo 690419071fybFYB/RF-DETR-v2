@@ -13,8 +13,8 @@ def main():
     # 启用自适应损失加权的训练配置
     model.train(
         dataset_file='coco',
-        dataset_dir='/root/UCAS_AOD_COCO/',
-        coco_path='/root/UCAS_AOD_COCO/',
+        dataset_dir='/root/RSOD_cocoFormat/',
+        coco_path='/root/RSOD_cocoFormat/',
         
         # 基础训练参数
         epochs=50,
@@ -35,10 +35,10 @@ def main():
         normalize_weights=True,
         
         # 输出目录
-        output_dir='results/4adaptive_loss_weighting_UCAS_AOD',
+        output_dir='results/4adaptive_loss_weighting_RSOD',
         
         # 其他参数
-        num_classes=2,
+        num_classes=4,
     )
 
 if __name__ == '__main__':
