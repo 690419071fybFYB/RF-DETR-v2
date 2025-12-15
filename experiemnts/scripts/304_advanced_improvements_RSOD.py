@@ -11,10 +11,19 @@ Branch: feat/advanced-improvements
 
 from rfdetr import RFDETRBase
 
-# Create model instance
-model = RFDETRBase()
+# ====== 模型结构参数必须在初始化时传递 ======
+model = RFDETRBase(
+    # ====== 方案三 + 方案五: Density Guidance (模型结构) ======
+    use_density_guidance=True,       # 启用密度引导
+    density_hidden_dim=256,          # 密度预测器隐藏层维度
+    # projector_scale 使用默认值 ["P4"]，因为预训练权重只支持单尺度
+    # 如果要使用多尺度，需要从头训练或使用 pretrain_weights=None
+    
+    # ====== 方案一: CIoU Loss (模型配置) ======
+    use_ciou_loss=True,              # 启用CIoU Loss
+)
 
-# Train with all three improvements enabled
+# ====== 训练参数在 train() 中传递 ======
 model.train(
     dataset_file='coco',
     dataset_dir='/root/RSOD_cocoFormat/',
@@ -27,16 +36,9 @@ model.train(
     lr=1e-4,
     num_workers=2,
     
-    # ====== 方案一: CIoU Loss ======
-    use_ciou_loss=True,              # 启用CIoU Loss
+    # ====== 损失权重 (训练参数) ======
     ciou_loss_coef=2.0,              # CIoU损失权重 (与GIoU相同)
-    
-    # ====== 方案三 + 方案五: Density Guidance ======
-    # 需要 projector_scale 包含 P3, P4, P5 以支持密度预测器
-    use_density_guidance=True,       # 启用密度引导 (包含方案三和方案五)
-    density_hidden_dim=256,          # 密度预测器隐藏层维度
     density_loss_coef=0.5,           # 密度损失系数
-    projector_scale=["P3", "P4", "P5"],  # 多尺度特征用于密度预测
     
     # Output Directory
     output_dir='results/304_advanced_improvements_RSOD',
