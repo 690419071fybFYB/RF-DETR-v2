@@ -72,6 +72,79 @@ def generalized_box_iou(boxes1, boxes2):
     return iou - (area - union) / area
 
 
+def distance_box_iou(boxes1, boxes2):
+    """
+    Distance IoU (DIoU) from https://arxiv.org/abs/1911.08287
+    
+    The boxes should be in [x0, y0, x1, y1] format
+    Returns a [N, M] pairwise matrix
+    """
+    iou, union = box_iou(boxes1, boxes2)
+    
+    # Center points
+    center1 = (boxes1[:, :2] + boxes1[:, 2:]) / 2  # [N, 2]
+    center2 = (boxes2[:, :2] + boxes2[:, 2:]) / 2  # [M, 2]
+    
+    # Distance between centers
+    center_dist = ((center1[:, None, :] - center2[None, :, :]) ** 2).sum(dim=-1)  # [N, M]
+    
+    # Enclosing box diagonal
+    lt = torch.min(boxes1[:, None, :2], boxes2[:, :2])
+    rb = torch.max(boxes1[:, None, 2:], boxes2[:, 2:])
+    diagonal = ((rb - lt) ** 2).sum(dim=-1)  # [N, M]
+    
+    # DIoU = IoU - d^2 / c^2
+    diou = iou - center_dist / (diagonal + 1e-7)
+    
+    return diou
+
+
+def complete_box_iou(boxes1, boxes2):
+    """
+    Complete IoU (CIoU) from https://arxiv.org/abs/1911.08287
+    
+    CIoU = IoU - d^2/c^2 - alpha*v
+    where v measures aspect ratio consistency and alpha is a trade-off parameter
+    
+    The boxes should be in [x0, y0, x1, y1] format
+    Returns a [N, M] pairwise matrix
+    """
+    import math
+    
+    iou, union = box_iou(boxes1, boxes2)
+    
+    # Center points
+    center1 = (boxes1[:, :2] + boxes1[:, 2:]) / 2  # [N, 2]
+    center2 = (boxes2[:, :2] + boxes2[:, 2:]) / 2  # [M, 2]
+    
+    # Distance between centers
+    center_dist = ((center1[:, None, :] - center2[None, :, :]) ** 2).sum(dim=-1)  # [N, M]
+    
+    # Enclosing box diagonal
+    lt = torch.min(boxes1[:, None, :2], boxes2[:, :2])
+    rb = torch.max(boxes1[:, None, 2:], boxes2[:, 2:])
+    diagonal = ((rb - lt) ** 2).sum(dim=-1)  # [N, M]
+    
+    # Width and height of boxes
+    w1, h1 = boxes1[:, 2] - boxes1[:, 0], boxes1[:, 3] - boxes1[:, 1]  # [N]
+    w2, h2 = boxes2[:, 2] - boxes2[:, 0], boxes2[:, 3] - boxes2[:, 1]  # [M]
+    
+    # Aspect ratio consistency term v
+    # v = (4/pi^2) * (arctan(w2/h2) - arctan(w1/h1))^2
+    arctan1 = torch.atan(w1 / (h1 + 1e-7))  # [N]
+    arctan2 = torch.atan(w2 / (h2 + 1e-7))  # [M]
+    v = (4 / (math.pi ** 2)) * ((arctan1[:, None] - arctan2[None, :]) ** 2)  # [N, M]
+    
+    # Trade-off parameter alpha
+    # alpha = v / (1 - IoU + v)
+    alpha = v / (1 - iou + v + 1e-7)
+    
+    # CIoU = IoU - d^2/c^2 - alpha*v
+    ciou = iou - center_dist / (diagonal + 1e-7) - alpha * v
+    
+    return ciou
+
+
 def masks_to_boxes(masks):
     """Compute the bounding boxes around the provided masks
 

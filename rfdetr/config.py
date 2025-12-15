@@ -37,6 +37,17 @@ class ModelConfig(BaseModel):
     cls_loss_coef: float = 1.0
     segmentation_head: bool = False
     mask_downsample_ratio: int = 4
+    # Density Guidance
+    use_density_guidance: bool = False
+    density_hidden_dim: int = 256
+    # Adaptive Loss Weighting (needed for SetCriterion in build_criterion)
+    enable_adaptive_loss_weighting: bool = False
+    scale_coef: float = 1.0
+    density_coef: float = 0.5
+    normalize_weights: bool = True
+    # CIoU Loss (方案一: 改进边界框回归)
+    use_ciou_loss: bool = False
+
 
 
 class RFDETRBaseConfig(ModelConfig):
@@ -159,6 +170,15 @@ class TrainConfig(BaseModel):
     class_names: List[str] = None
     run_test: bool = True
     segmentation_head: bool = False
+    density_loss_coef: float = 0.5
+    # Adaptive Loss Weighting
+    enable_adaptive_loss_weighting: bool = False
+    scale_coef: float = 1.0
+    density_coef: float = 0.5
+    normalize_weights: bool = True
+    # CIoU Loss (方案一)
+    use_ciou_loss: bool = False
+    ciou_loss_coef: float = 2.0
 
 
 class SegmentationTrainConfig(TrainConfig):

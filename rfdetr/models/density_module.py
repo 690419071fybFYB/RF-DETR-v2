@@ -6,13 +6,14 @@
 
 """
 密度引导查询增强模块 (Density-Guided Query Enhancement)
-包含密度图生成、密度预测和查询增强三个核心组件
+包含密度图生成、密度预测、查询增强和密度感知Query选择四个核心组件
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import math
 from typing import List, Tuple
 
 
@@ -287,3 +288,106 @@ class DensityGuidedQueryEnhancer(nn.Module):
         enhanced_query_pos = query_pos + gate_weights * density_bias
         
         return enhanced_query_pos
+
+
+class DensityAwareQuerySelector(nn.Module):
+    """
+    密度感知Query选择器 (方案三)
+    根据场景密度动态调整query的激活程度
+    在密集区域激活更多queries,稀疏区域减少queries
+    """
+    
+    def __init__(
+        self,
+        num_queries: int = 300,
+        hidden_dim: int = 256,
+        min_activation: float = 0.3,
+        temperature: float = 1.0
+    ):
+        super().__init__()
+        
+        self.num_queries = num_queries
+        self.hidden_dim = hidden_dim
+        self.min_activation = min_activation
+        self.temperature = temperature
+        
+        # 密度统计 -> query激活权重
+        # 输入: 密度图的全局统计特征 (mean, max, std)
+        self.density_encoder = nn.Sequential(
+            nn.Linear(3, 64),
+            nn.ReLU(),
+            nn.Linear(64, 128),
+            nn.ReLU(),
+        )
+        
+        # 生成每个query的激活权重
+        self.query_activator = nn.Sequential(
+            nn.Linear(128, num_queries),
+            nn.Sigmoid()
+        )
+        
+        # 可学习的query重要性先验 (某些queries天然更重要)
+        self.query_prior = nn.Parameter(torch.ones(num_queries))
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+    
+    def forward(
+        self,
+        query_feat: torch.Tensor,
+        density_map: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+            query_feat: [B, N, D] 或 [N, D] 查询特征
+            density_map: [B, 1, H, W] 密度图
+        
+        Returns:
+            weighted_query_feat: [B, N, D] 加权后的查询特征
+        """
+        B = density_map.shape[0]
+        
+        # 处理 query_feat 维度
+        if query_feat.dim() == 2:
+            # [N, D] -> [B, N, D]
+            query_feat = query_feat.unsqueeze(0).expand(B, -1, -1)
+        
+        N, D = query_feat.shape[1], query_feat.shape[2]
+        
+        # 计算密度图的全局统计特征
+        density_flat = density_map.view(B, -1)  # [B, H*W]
+        density_mean = density_flat.mean(dim=1, keepdim=True)  # [B, 1]
+        density_max = density_flat.max(dim=1, keepdim=True)[0]  # [B, 1]
+        density_std = density_flat.std(dim=1, keepdim=True)  # [B, 1]
+        
+        # 组合统计特征
+        density_stats = torch.cat([density_mean, density_max, density_std], dim=1)  # [B, 3]
+        
+        # 编码密度统计
+        density_encoded = self.density_encoder(density_stats)  # [B, 128]
+        
+        # 生成query激活权重
+        activation_weights = self.query_activator(density_encoded)  # [B, N]
+        
+        # 结合可学习的先验
+        query_prior_norm = torch.sigmoid(self.query_prior)  # [N]
+        activation_weights = activation_weights * query_prior_norm.unsqueeze(0)  # [B, N]
+        
+        # 确保最小激活度
+        activation_weights = self.min_activation + (1 - self.min_activation) * activation_weights
+        
+        # 温度缩放 (使分布更尖锐或平滑)
+        if self.temperature != 1.0:
+            activation_weights = activation_weights ** (1.0 / self.temperature)
+        
+        # 应用激活权重到query特征
+        weighted_query_feat = query_feat * activation_weights.unsqueeze(-1)  # [B, N, D]
+        
+        return weighted_query_feat
+

@@ -265,7 +265,13 @@ class Transformer(nn.Module):
             boxes_ts = torch.cat(boxes_ts, dim=1)#.transpose(0, 1)
         
         if self.dec_layers > 0:
-            tgt = query_feat.unsqueeze(0).repeat(bs, 1, 1)
+            # 支持 2D [NQ, C] 和 3D [B, NQ, C] 的 query_feat 输入
+            # 方案五: Per-Image Query Enhancement 需要 3D 输入
+            if query_feat.dim() == 2:
+                tgt = query_feat.unsqueeze(0).repeat(bs, 1, 1)
+            else:
+                # query_feat 已经是 [B, NQ, C]
+                tgt = query_feat
             refpoint_embed = refpoint_embed.unsqueeze(0).repeat(bs, 1, 1)
             if self.two_stage:
                 ts_len = refpoint_embed_ts.shape[-2]

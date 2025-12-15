@@ -35,7 +35,7 @@ from rfdetr.models.backbone import build_backbone
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.transformer import build_transformer
 from rfdetr.models.segmentation_head import SegmentationHead, get_uncertain_point_coords_with_randomness, point_sample
-from rfdetr.models.density_module import DensityPredictor, DensityGuidedQueryEnhancer, DensityMapGenerator
+from rfdetr.models.density_module import DensityPredictor, DensityGuidedQueryEnhancer, DensityMapGenerator, DensityAwareQuerySelector
 
 class LWDETR(nn.Module):
     """ This is the Group DETR v3 module that performs object detection """
@@ -122,6 +122,13 @@ class LWDETR(nn.Module):
                 hidden_dim=hidden_dim,
                 num_feature_levels=len(self.backbone.num_channels) if hasattr(self.backbone, 'num_channels') else 4
             )
+            # 密度感知Query选择器 (方案三)
+            self.density_query_selector = DensityAwareQuerySelector(
+                num_queries=num_queries * group_detr,
+                hidden_dim=hidden_dim,
+                min_activation=0.3,
+                temperature=1.0
+            )
 
     def reinitialize_detection_head(self, num_classes):
         base = self.class_embed.weight.shape[0]
@@ -181,34 +188,42 @@ class LWDETR(nn.Module):
             refpoint_embed_weight = self.refpoint_embed.weight[:self.num_queries]
             query_feat_weight = self.query_feat.weight[:self.num_queries]
         
-        # \u5bc6\u5ea6\u5f15\u5bfc\u6a21\u5757
+        # 密度引导模块
         density_map = None
         if self.use_density_guidance:
-            # \u4f7f\u7528S3,S4,S5\u7279\u5f81\u9884\u6d4b\u5bc6\u5ea6\u56fe
-            # features\u7684\u987a\u5e8f\u901a\u5e38\u662f [P3, P4, P5, P6],\u6211\u4eec\u53d6\u524d3\u4e2a
+            # 使用S3,S4,S5特征预测密度图
+            # features的顺序通常是 [P3, P4, P5, P6],我们取前3个
             density_features = srcs[:3] if len(srcs) >= 3 else srcs
             density_map = self.density_predictor(density_features)  # [B, 1, H/16, W/16]
             
-            # \u4f7f\u7528\u5bc6\u5ea6\u56fe\u589e\u5f3aquery\u4f4d\u7f6e\u7f16\u7801(\u5728transformer\u4f7f\u7528\u4e4b\u524d)
-            # \u9996\u5148\u9700\u8981\u5c06refpoint_embed_weight\u590d\u5236\u5230batch
+            # 使用密度图增强query位置编码(在transformer使用之前)
+            # 首先需要将refpoint_embed_weight复制到batch
             bs = srcs[0].shape[0]
             refpoint_embed_batch = refpoint_embed_weight.unsqueeze(0).repeat(bs, 1, 1)
             
-            # \u751f\u6210query\u4f4d\u7f6e\u7f16\u7801(\u57fa\u4e8esine embedding)
+            # 生成query位置编码(基于sine embedding)
             from rfdetr.models.transformer import gen_sineembed_for_position
             query_sine_embed = gen_sineembed_for_position(refpoint_embed_batch, self.transformer.d_model // 2)
-            query_pos = query_sine_embed  # \u7b80\u5316,\u76f4\u63a5\u4f7f\u7528sine embedding
+            query_pos = query_sine_embed  # 简化,直接使用sine embedding
             
-            # \u5e94\u7528\u5bc6\u5ea6\u589e\u5f3a
+            # 应用密度增强 (方案五: Per-Image Enhancement)
             query_pos_enhanced = self.density_query_enhancer(
-                query_pos, density_map, refpoint_embed_batch[..., :2]  # \u53ea\u4f7f\u7528cx,cy
+                query_pos, density_map, refpoint_embed_batch[..., :2]  # 只使用cx,cy
             )
             
-            # \u5c06\u589e\u5f3a\u540e\u7684\u4f4d\u7f6e\u7f16\u7801\u5b58\u50a8(\u5907\u7528,\u5f53\u524d\u4e0d\u76f4\u63a5\u4f7f\u7528)
-            # \u56e0\u4e3atransformer\u81ea\u5df1\u4f1a\u91cd\u65b0\u8ba1\u7b97query_pos
-            # \u6240\u4ee5\u6211\u4eec\u901a\u8fc7\u8c03\u6574refpoint_embed\u6765\u95f4\u63a5\u5f71\u54cd
-            # \u8fd9\u91cc\u91c7\u7528\u66f4\u76f4\u63a5\u7684\u65b9\u5f0f:\u5c06query_feat\u589e\u5f3a
-            query_feat_weight = query_feat_weight + query_pos_enhanced.mean(0)  # \u5e73\u5747\u5230batch\u7ef4\u5ea6
+            # ====== 方案五: Per-Image Query Enhancement ======
+            # 不再使用 mean(0) 跨batch平均, 而是保持每张图独立的增强
+            # query_feat_weight: [NQ, C] -> [B, NQ, C]
+            # query_pos_enhanced: [B, NQ, C]
+            # 直接相加后得到 [B, NQ, C], 每张图有独立的query特征
+            query_feat_batch = query_feat_weight.unsqueeze(0).expand(bs, -1, -1) + query_pos_enhanced
+            
+            # ====== 方案三: Density-Aware Query Selection ======
+            # 根据密度动态调整query激活权重
+            query_feat_batch = self.density_query_selector(query_feat_batch, density_map)
+            
+            # 使用增强后的 batch query 特征
+            query_feat_weight = query_feat_batch
 
         hs, ref_unsigmoid, hs_enc, ref_enc = self.transformer(
             srcs, masks, poss, refpoint_embed_weight, query_feat_weight)
@@ -349,7 +364,9 @@ class SetCriterion(nn.Module):
                 enable_adaptive_loss_weighting=False,
                 scale_coef=1.0,
                 density_coef=0.5,
-                normalize_weights=True):
+                normalize_weights=True,
+                # CIoU Loss
+                use_ciou_loss=False):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -379,6 +396,9 @@ class SetCriterion(nn.Module):
         self.normalize_weights = normalize_weights
         
         self.density_sigma = 8.0  # 密度图高斐核参数
+        
+        # CIoU Loss
+        self.use_ciou_loss = use_ciou_loss
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (Binary focal loss)
@@ -602,10 +622,19 @@ class SetCriterion(nn.Module):
         losses = {}
         losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
+        # GIoU Loss
         loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
             box_ops.box_cxcywh_to_xyxy(src_boxes),
             box_ops.box_cxcywh_to_xyxy(target_boxes)))
         losses['loss_giou'] = loss_giou.sum() / num_boxes
+        
+        # CIoU Loss (Complete IoU - better localization)
+        if self.use_ciou_loss:
+            loss_ciou = 1 - torch.diag(box_ops.complete_box_iou(
+                box_ops.box_cxcywh_to_xyxy(src_boxes),
+                box_ops.box_cxcywh_to_xyxy(target_boxes)))
+            losses['loss_ciou'] = loss_ciou.sum() / num_boxes
+        
         return losses
     
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -1041,6 +1070,9 @@ def build_criterion_and_postprocessors(args):
         weight_dict['loss_mask_dice'] = args.mask_dice_loss_coef
     if getattr(args, 'use_density_guidance', False):
         weight_dict['loss_density'] = getattr(args, 'density_loss_coef', 0.5)
+    # CIoU Loss (方案一: 改进边界框回归)
+    if getattr(args, 'use_ciou_loss', False):
+        weight_dict['loss_ciou'] = getattr(args, 'ciou_loss_coef', 2.0)  # 默认与giou相同权重
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -1072,7 +1104,9 @@ def build_criterion_and_postprocessors(args):
                                 enable_adaptive_loss_weighting=getattr(args, 'enable_adaptive_loss_weighting', False),
                                 scale_coef=getattr(args, 'scale_coef', 1.0),
                                 density_coef=getattr(args, 'density_coef', 0.5),
-                                normalize_weights=getattr(args, 'normalize_weights', True))
+                                normalize_weights=getattr(args, 'normalize_weights', True),
+                                # CIoU Loss (方案一)
+                                use_ciou_loss=getattr(args, 'use_ciou_loss', False))
     else:
         criterion = SetCriterion(args.num_classes + 1, matcher=matcher, weight_dict=weight_dict,
                                 focal_alpha=args.focal_alpha, losses=losses, 
@@ -1083,7 +1117,9 @@ def build_criterion_and_postprocessors(args):
                                 enable_adaptive_loss_weighting=getattr(args, 'enable_adaptive_loss_weighting', False),
                                 scale_coef=getattr(args, 'scale_coef', 1.0),
                                 density_coef=getattr(args, 'density_coef', 0.5),
-                                normalize_weights=getattr(args, 'normalize_weights', True))
+                                normalize_weights=getattr(args, 'normalize_weights', True),
+                                # CIoU Loss (方案一)
+                                use_ciou_loss=getattr(args, 'use_ciou_loss', False))
     criterion.to(device)
     postprocess = PostProcess(num_select=args.num_select)
 
