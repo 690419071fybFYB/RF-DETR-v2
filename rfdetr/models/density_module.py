@@ -397,10 +397,29 @@ class DensityAwareQuerySelector(nn.Module):
         density_encoded = self.density_encoder(density_stats)  # [B, 128]
         
         # 生成query激活权重
-        activation_weights = self.query_activator(density_encoded)  # [B, N]
+        # 注意: query_activator 输出 [B, self.num_queries]
+        # 但实际 N 可能不同 (训练时 3900, 推理时 300)
+        base_activation = self.query_activator(density_encoded)  # [B, self.num_queries]
+        
+        # 动态适配 query 数量
+        if N != self.num_queries:
+            # 如果 N < self.num_queries, 取前 N 个
+            # 如果 N > self.num_queries, 重复/插值
+            if N <= self.num_queries:
+                activation_weights = base_activation[:, :N]  # [B, N]
+                query_prior_subset = self.query_prior[:N]
+            else:
+                # N > self.num_queries (如训练时 3900 > 300)
+                # 通过重复来扩展
+                repeat_times = (N + self.num_queries - 1) // self.num_queries
+                activation_weights = base_activation.repeat(1, repeat_times)[:, :N]  # [B, N]
+                query_prior_subset = self.query_prior.repeat(repeat_times)[:N]
+        else:
+            activation_weights = base_activation
+            query_prior_subset = self.query_prior
         
         # 结合可学习的先验
-        query_prior_norm = torch.sigmoid(self.query_prior)  # [N]
+        query_prior_norm = torch.sigmoid(query_prior_subset)  # [N]
         activation_weights = activation_weights * query_prior_norm.unsqueeze(0)  # [B, N]
         
         # 确保最小激活度
