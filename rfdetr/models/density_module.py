@@ -152,25 +152,49 @@ class DensityPredictor(nn.Module):
         """
         Args:
             features: List of [B, C, H, W] 特征图
-                      [S3 (H/8, W/8), S4 (H/16, W/16), S5 (H/32, W/32)]
+                      可以是1-3个特征图, 会自动适配
         
         Returns:
             density_map: [B, 1, H/16, W/16] 密度图
         """
-        assert len(features) == 3, f"Expected 3 features, got {len(features)}"
+        num_features = len(features)
+        
+        # 如果只有一个特征, 直接使用它
+        if num_features == 1:
+            feat = self.lateral_convs[0](features[0])
+            feat = self.fpn_convs[0](feat)
+            return self.density_head(feat)
+        
+        # 如果有多个特征, 进行FPN融合
+        # 取前 min(num_features, 3) 个特征
+        use_features = features[:min(num_features, 3)]
         
         # 侧向连接
         laterals = [
-            lateral_conv(feat)
-            for lateral_conv, feat in zip(self.lateral_convs, features)
+            self.lateral_convs[i](feat)
+            for i, feat in enumerate(use_features)
         ]
         
         # 自顶向下融合 (FPN)
-        # S5 -> S4 -> S3
-        fpn_features = []
+        # 从最粗尺度开始 (最后一个特征)
+        num_laterals = len(laterals)
         
-        # 从最粗尺度开始
-        prev_feat = laterals[2]  # S5
+        if num_laterals == 2:
+            # 只有2个特征: 从粗到细融合
+            prev_feat = laterals[1]  # 较粗尺度
+            upsampled = F.interpolate(
+                prev_feat,
+                size=laterals[0].shape[-2:],
+                mode='bilinear',
+                align_corners=False
+            )
+            fused = laterals[0] + upsampled
+            fpn_feat = self.fpn_convs[0](fused)
+            return self.density_head(fpn_feat)
+        
+        # 3个特征的标准FPN
+        fpn_features = []
+        prev_feat = laterals[2]  # S5 (最粗)
         for i in range(2, -1, -1):
             if i < 2:
                 # 上采样并相加

@@ -202,13 +202,15 @@ class LWDETR(nn.Module):
             refpoint_embed_batch = refpoint_embed_weight.unsqueeze(0).repeat(bs, 1, 1)
             
             # 生成query位置编码(基于sine embedding)
+            # 只使用 [cx, cy] 坐标 (前2个维度) 以得到正确的维度 [B, NQ, hidden_dim]
             from rfdetr.models.transformer import gen_sineembed_for_position
-            query_sine_embed = gen_sineembed_for_position(refpoint_embed_batch, self.transformer.d_model // 2)
-            query_pos = query_sine_embed  # 简化,直接使用sine embedding
+            ref_points_2d = refpoint_embed_batch[..., :2]  # [B, NQ, 2]
+            query_sine_embed = gen_sineembed_for_position(ref_points_2d, self.transformer.d_model // 2)
+            query_pos = query_sine_embed  # [B, NQ, d_model] 
             
             # 应用密度增强 (方案五: Per-Image Enhancement)
             query_pos_enhanced = self.density_query_enhancer(
-                query_pos, density_map, refpoint_embed_batch[..., :2]  # 只使用cx,cy
+                query_pos, density_map, ref_points_2d  # 只使用cx,cy
             )
             
             # ====== 方案五: Per-Image Query Enhancement ======
