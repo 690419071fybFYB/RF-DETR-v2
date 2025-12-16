@@ -37,6 +37,21 @@ class CocoEvaluator(object):
     def __init__(self, coco_gt, iou_types):
         assert isinstance(iou_types, (list, tuple))
         coco_gt = copy.deepcopy(coco_gt)
+        
+        # 确保 COCO 数据集包含必需的字段，避免 KeyError
+        if not hasattr(coco_gt, 'dataset'):
+            coco_gt.dataset = {}
+        if 'info' not in coco_gt.dataset:
+            coco_gt.dataset['info'] = {
+                'description': 'Dataset',
+                'version': '1.0',
+                'year': 2024,
+                'contributor': 'Unknown',
+                'date_created': '2024/01/01'
+            }
+        if 'licenses' not in coco_gt.dataset:
+            coco_gt.dataset['licenses'] = []
+        
         self.coco_gt = coco_gt
 
         self.iou_types = iou_types
