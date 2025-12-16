@@ -1,0 +1,281 @@
+{
+    "improvement_ideas": [
+        {
+            "id": 1,
+            "name": "Overpass类别专项优化",
+            "priority": "高",
+            "difficulty": "低",
+            "expected_benefit": "中",
+            "status": "未实现",
+            "description": "针对Overpass类别mAP较低(0.47)的问题，增加该类别的损失权重",
+            "motivation": "Overpass是长条形目标，容易与背景混淆，检测效果远低于其他类别(0.65-0.91)",
+            "implementation": {
+                "approach": "类别感知的损失权重",
+                "code_location": "rfdetr/models/lwdetr.py - SetCriterion",
+                "key_changes": [
+                    "在SetCriterion中添加class_weights参数",
+                    "在loss_labels中应用类别权重",
+                    "为Overpass设置2.0的权重，其他类别为1.0"
+                ],
+                "config_params": {
+                    "class_weights": {
+                        "aircraft": 1.0,
+                        "oiltank": 1.0,
+                        "overpass": 2.0,
+                        "playground": 1.0
+                    }
+                }
+            },
+            "related_files": [
+                "rfdetr/models/lwdetr.py",
+                "rfdetr/config.py"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "长宽比感知损失 (Aspect Ratio Aware Loss)",
+            "priority": "高",
+            "difficulty": "中",
+            "expected_benefit": "中",
+            "status": "未实现",
+            "description": "对长宽比差异大的预测额外惩罚，特别适合Overpass等长条形目标",
+            "motivation": "立交桥等目标通常是长条形，传统损失函数对长宽比不够敏感",
+            "implementation": {
+                "approach": "添加aspect ratio一致性损失",
+                "code_location": "rfdetr/models/lwdetr.py - SetCriterion.loss_boxes",
+                "key_changes": [
+                    "计算预测框和GT框的长宽比",
+                    "使用smooth L1 loss惩罚长宽比差异",
+                    "将ar_loss加入总损失"
+                ],
+                "formula": "ar_loss = F.smooth_l1_loss(pred_w/pred_h, target_w/target_h)"
+            },
+            "related_files": [
+                "rfdetr/models/lwdetr.py"
+            ]
+        },
+        {
+            "id": 3,
+            "name": "基于密度图的Query位置初始化",
+            "priority": "中",
+            "difficulty": "高",
+            "expected_benefit": "高",
+            "status": "未实现",
+            "description": "根据密度图采样初始query位置，在密度高的区域放置更多queries",
+            "motivation": "当前query位置是随机初始化的，利用密度图可以做更智能的初始化",
+            "implementation": {
+                "approach": "密度引导的query采样",
+                "code_location": "rfdetr/models/density_module.py - 新增DensityGuidedQueryInit类",
+                "key_changes": [
+                    "将密度图转为概率分布",
+                    "按概率采样query位置",
+                    "替换原有的随机初始化"
+                ],
+                "pseudocode": [
+                    "prob = density_map.flatten() / density_map.sum()",
+                    "indices = torch.multinomial(prob, num_queries)",
+                    "positions = indices_to_coords(indices, density_map.shape)"
+                ]
+            },
+            "related_files": [
+                "rfdetr/models/density_module.py",
+                "rfdetr/models/lwdetr.py"
+            ]
+        },
+        {
+            "id": 4,
+            "name": "小目标专用Query分支",
+            "priority": "中",
+            "difficulty": "高",
+            "expected_benefit": "中",
+            "status": "未实现",
+            "description": "分离小目标和大目标的queries，小目标queries关注高分辨率特征(P3)，大目标queries关注语义特征(P5)",
+            "motivation": "统一的queries难以同时擅长检测小目标和大目标",
+            "implementation": {
+                "approach": "尺度感知的Query模块",
+                "code_location": "rfdetr/models/lwdetr.py - 新增ScaleAwareQueries类",
+                "architecture": {
+                    "small_queries": 100,
+                    "large_queries": 200,
+                    "small_scale_threshold": 0.1,
+                    "features": {
+                        "small_queries": "优先与P3交互",
+                        "large_queries": "优先与P5交互"
+                    }
+                },
+                "key_changes": [
+                    "创建small_refpoint_embed和large_refpoint_embed",
+                    "小目标queries初始化为小尺寸锚框(0.05)",
+                    "大目标queries初始化为中大尺寸锚框(0.15-0.5)",
+                    "使用尺度特定的特征投影"
+                ]
+            },
+            "related_files": [
+                "rfdetr/models/lwdetr.py",
+                "rfdetr/models/matcher.py"
+            ]
+        },
+        {
+            "id": 5,
+            "name": "Focal Loss Alpha自适应调整",
+            "priority": "中",
+            "difficulty": "中",
+            "expected_benefit": "中",
+            "status": "未实现",
+            "description": "根据每个batch的类别分布动态调整focal loss的alpha参数",
+            "motivation": "固定的alpha无法适应不同batch中的类别不平衡程度",
+            "implementation": {
+                "approach": "Batch级别的动态alpha",
+                "code_location": "rfdetr/models/lwdetr.py - SetCriterion.loss_labels",
+                "key_changes": [
+                    "统计batch中每个类别的样本数",
+                    "少数类给更高的alpha",
+                    "归一化alpha值"
+                ],
+                "formula": "alpha = 1.0 / (class_counts + 1e-6); alpha = alpha / alpha.sum()"
+            },
+            "related_files": [
+                "rfdetr/models/lwdetr.py"
+            ]
+        },
+        {
+            "id": 6,
+            "name": "Copy-Paste数据增强",
+            "priority": "中",
+            "difficulty": "中",
+            "expected_benefit": "高",
+            "status": "未实现",
+            "description": "将小目标复制粘贴到其他图像中，增加训练样本多样性",
+            "motivation": "遥感图像中小目标样本较少，通过Copy-Paste可以增加样本数量和多样性",
+            "implementation": {
+                "approach": "训练时数据增强",
+                "code_location": "rfdetr/datasets/transforms.py - 新增CopyPaste类",
+                "key_changes": [
+                    "从source图像中随机选择小目标",
+                    "粘贴到当前图像的合理位置",
+                    "更新标注信息",
+                    "避免与现有目标重叠"
+                ],
+                "parameters": {
+                    "paste_prob": 0.5,
+                    "max_paste_objects": 5,
+                    "scale_range": [
+                        0.8,
+                        1.2
+                    ]
+                }
+            },
+            "related_files": [
+                "rfdetr/datasets/transforms.py",
+                "rfdetr/datasets/coco.py"
+            ]
+        },
+        {
+            "id": 7,
+            "name": "可变形卷积增强 (Deformable Convolution)",
+            "priority": "低",
+            "difficulty": "高",
+            "expected_benefit": "中",
+            "status": "未实现",
+            "description": "在FPN或Projector中使用可变形卷积，更好地适应不规则形状目标",
+            "motivation": "立交桥等不规则形状目标，标准卷积难以有效建模",
+            "implementation": {
+                "approach": "DCNv2集成",
+                "code_location": "rfdetr/models/backbone/projector.py",
+                "key_changes": [
+                    "使用DeformConv2d替换标准Conv2d",
+                    "添加offset预测分支",
+                    "在FPN融合层使用DCN"
+                ],
+                "dependencies": "torchvision.ops.DeformConv2d"
+            },
+            "related_files": [
+                "rfdetr/models/backbone/projector.py"
+            ]
+        },
+        {
+            "id": 8,
+            "name": "Test-Time Augmentation (TTA)",
+            "priority": "低",
+            "difficulty": "低",
+            "expected_benefit": "中",
+            "status": "未实现",
+            "description": "推理时使用多尺度/翻转增强，融合预测结果",
+            "motivation": "通过测试时增强可以提升推理性能，无需重新训练",
+            "implementation": {
+                "approach": "推理时多尺度融合",
+                "code_location": "rfdetr/engine.py - 新增predict_with_tta函数",
+                "key_changes": [
+                    "对输入图像应用不同尺度和翻转",
+                    "收集所有增强的预测结果",
+                    "使用NMS融合结果"
+                ],
+                "parameters": {
+                    "scales": [
+                        0.8,
+                        1.0,
+                        1.2
+                    ],
+                    "flips": [
+                        false,
+                        true
+                    ],
+                    "nms_threshold": 0.5
+                }
+            },
+            "related_files": [
+                "rfdetr/engine.py"
+            ]
+        }
+    ],
+    "implementation_roadmap": {
+        "phase_1_quick_wins": {
+            "ideas": [
+                1,
+                2
+            ],
+            "reason": "简单实现，针对性强，预期对Overpass类有显著改善"
+        },
+        "phase_2_core_improvements": {
+            "ideas": [
+                3,
+                4,
+                6
+            ],
+            "reason": "核心架构改进，预期收益大，需要较多开发时间"
+        },
+        "phase_3_advanced_features": {
+            "ideas": [
+                5,
+                7,
+                8
+            ],
+            "reason": "高级特性，锦上添花，可根据前期效果决定是否实施"
+        }
+    },
+    "current_baselines": {
+        "baseline": {
+            "map@50:95": 0.7163,
+            "map@50": 0.9559,
+            "precision": 0.9379,
+            "recall": 0.85
+        },
+        "density_guided": {
+            "map@50:95": 0.7194,
+            "map@50": 0.9490,
+            "precision": 0.9189,
+            "recall": 0.88
+        },
+        "overpass_class_issue": {
+            "map@50:95": 0.47,
+            "note": "远低于其他类别(0.65-0.91)"
+        }
+    },
+    "metadata": {
+        "created": "2025-12-15",
+        "last_updated": "2025-12-15",
+        "dataset": "RSOD",
+        "model": "RF-DETR-Base",
+        "total_ideas": 8
+    }
+}

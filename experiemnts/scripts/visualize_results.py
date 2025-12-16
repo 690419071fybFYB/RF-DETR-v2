@@ -73,7 +73,18 @@ def plot_bar_comparison(models_data, output_dir, split='test'):
             
             # Calculate offset for grouped bars
             offset = (i - n_models/2) * bar_width + bar_width/2
-            ax.bar(x + offset, model_vals, bar_width, label=model_name, color=colors[i], alpha=0.85, edgecolor='white', linewidth=0.5)
+            bars = ax.bar(x + offset, model_vals, bar_width, label=model_name, color=colors[i], alpha=0.85, edgecolor='white', linewidth=0.5)
+            
+            # Add value labels on top of each bar
+            for bar, val in zip(bars, model_vals):
+                height = bar.get_height()
+                ax.annotate(f'{val:.2f}',
+                           xy=(bar.get_x() + bar.get_width() / 2, height),
+                           xytext=(0, 2),  # 2 points vertical offset
+                           textcoords="offset points",
+                           ha='center', va='bottom',
+                           fontsize=7, fontweight='bold',
+                           rotation=90)
         
         ax.set_ylabel(label, fontsize=14)
         ax.set_title(f'{label}', fontsize=16, fontweight='bold')
@@ -109,15 +120,25 @@ def plot_radar_comparison(models_data, output_dir, split='test'):
         all_res = next((item for item in model['data']['class_map'][split] if item['class'] == 'all'), None)
         if not all_res: continue
         
-        values = [all_res[k] for k in keys]
+        values = [all_res.get(k, 0.0) for k in keys]
         values += values[:1] # Close the loop
         
         ax.plot(angles, values, 'o-', linewidth=2, label=model['name'], color=colors[i])
         ax.fill(angles, values, alpha=0.05, color=colors[i])
         
-        # Add labels for the first metric (mAP) to show values roughly
-        # For clarity, only showing mAP@50:95 value here or rely on table
-        # ax.text(angles[0], values[0] + 0.05, f"{values[0]:.2f}", ha='center', color=colors[i], fontsize=8, fontweight='bold')
+        # Add value labels at each point on the radar chart
+        for j, (angle, value) in enumerate(zip(angles[:-1], values[:-1])):
+            # Adjust label position based on angle to avoid overlap
+            ha = 'left' if 0 < angle < np.pi else 'right'
+            if abs(angle - np.pi/2) < 0.1 or abs(angle - 3*np.pi/2) < 0.1:
+                ha = 'center'
+            
+            # Offset for different models to reduce overlap
+            offset_r = 0.03 + i * 0.02
+            ax.text(angle, value + offset_r, f'{value:.3f}',
+                   ha=ha, va='bottom',
+                   fontsize=8, fontweight='bold',
+                   color=colors[i])
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=14, fontweight='bold')
@@ -135,38 +156,187 @@ def plot_radar_comparison(models_data, output_dir, split='test'):
     print(f"✅ Radar chart saved: {out_file}")
     plt.close()
 
+def plot_scale_metrics(models_data, output_dir, split='test'):
+    """Plot scale-specific metrics (small/medium/large)"""
+    if not models_data: return
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle(f'Scale-Specific Performance ({split.capitalize()} Set)', fontsize=18, fontweight='bold')
+    
+    colors = get_color_palette(len(models_data))
+    
+    # Plot 1: Scale-specific mAP
+    ax = axes[0]
+    scales = ['Small', 'Medium', 'Large']
+    keys = ['map_small', 'map_medium', 'map_large']
+    
+    x = np.arange(len(scales))
+    width = 0.8 / len(models_data)
+    
+    for i, model in enumerate(models_data):
+        all_res = next((item for item in model['data']['class_map'][split] if item['class'] == 'all'), None)
+        if not all_res: continue
+        
+        values = [all_res.get(k, 0.0) for k in keys]
+        offset = (i - len(models_data)/2) * width + width/2
+        bars = ax.bar(x + offset, values, width, label=model['name'], color=colors[i], alpha=0.85)
+        
+        # Add value labels
+        for bar, val in zip(bars, values):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2, height,
+                   f'{val:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    ax.set_ylabel('mAP', fontsize=12)
+    ax.set_title('Scale-Specific mAP', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scales)
+    ax.legend(fontsize=10)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, 1)
+    
+    # Plot 2: Scale-specific AR
+    ax = axes[1]
+    ar_keys = ['ar_small', 'ar_medium', 'ar_large']
+    
+    for i, model in enumerate(models_data):
+        all_res = next((item for item in model['data']['class_map'][split] if item['class'] == 'all'), None)
+        if not all_res: continue
+        
+        values = [all_res.get(k, 0.0) for k in ar_keys]
+        offset = (i - len(models_data)/2) * width + width/2
+        bars = ax.bar(x + offset, values, width, label=model['name'], color=colors[i], alpha=0.85)
+        
+        # Add value labels
+        for bar, val in zip(bars, values):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2, height,
+                   f'{val:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    ax.set_ylabel('AR', fontsize=12)
+    ax.set_title('Scale-Specific Average Recall', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scales)
+    ax.legend(fontsize=10)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, 1)
+    
+    plt.tight_layout()
+    out_file = output_dir / f'multi_model_scale_metrics_{split}.png'
+    plt.savefig(out_file, dpi=300, bbox_inches='tight')
+    print(f"✅ Scale metrics chart saved: {out_file}")
+    plt.close()
+
+def plot_ar_metrics(models_data, output_dir, split='test'):
+    """Plot Average Recall metrics at different IoU thresholds"""
+    if not models_data: return
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    fig.suptitle(f'Average Recall Comparison ({split.capitalize()} Set)', fontsize=18, fontweight='bold')
+    
+    colors = get_color_palette(len(models_data))
+    
+    ar_types = ['AR@1', 'AR@10', 'AR@100']
+    ar_keys = ['ar@1', 'ar@10', 'ar@100']
+    
+    x = np.arange(len(ar_types))
+    width = 0.8 / len(models_data)
+    
+    for i, model in enumerate(models_data):
+        all_res = next((item for item in model['data']['class_map'][split] if item['class'] == 'all'), None)
+        if not all_res: continue
+        
+        values = [all_res.get(k, 0.0) for k in ar_keys]
+        offset = (i - len(models_data)/2) * width + width/2
+        bars = ax.bar(x + offset, values, width, label=model['name'], color=colors[i], alpha=0.85)
+        
+        # Add value labels
+        for bar, val in zip(bars, values):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2, height,
+                   f'{val:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    ax.set_ylabel('Average Recall', fontsize=12)
+    ax.set_title('Average Recall at Different Max Detections', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(ar_types)
+    ax.legend(fontsize=10)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, 1)
+    
+    plt.tight_layout()
+    out_file = output_dir / f'multi_model_ar_metrics_{split}.png'
+    plt.savefig(out_file, dpi=300, bbox_inches='tight')
+    print(f"✅ AR metrics chart saved: {out_file}")
+    plt.close()
+
 def print_summary(models_data, split='test'):
-    """Print a comparison table of overall metrics"""
-    print("\n" + "="*120)
+    """Print a comprehensive comparison table of all available metrics"""
+    print("\n" + "="*140)
     print(f"📊 Multi-Model Performance Summary ({split.capitalize()} Set)")
-    print("="*120)
+    print("="*140)
     
     # Calculate column width based on max name length
     name_width = max([len(m['name']) for m in models_data] + [10]) + 2
     name_width = min(name_width, 25) # Cap width
     
-    header = f"{'Metric':<15}"
+    header = f"{'Metric':<20}"
     for model in models_data:
         disp_name = (model['name'][:name_width-3] + '..') if len(model['name']) > name_width else model['name']
         header += f" | {disp_name:^{name_width}}"
     print(header)
     print("-" * len(header))
     
-    metrics = [
-        ('mAP@50:95', 'map@50:95'),
-        ('mAP@50', 'map@50'),
-        ('Precision', 'precision'),
-        ('Recall', 'recall')
+    # Get all available metrics from first model's 'all' class
+    first_all = next((item for item in models_data[0]['data']['class_map'][split] if item['class'] == 'all'), None)
+    if not first_all:
+        print("❌ No 'all' class data found")
+        return
+    
+    # Define metric categories and their keys
+    metric_groups = [
+        ("🎯 Main Metrics", [
+            ('mAP@50:95', 'map@50:95'),
+            ('mAP@50', 'map@50'),
+            ('mAP@75', 'map@75'),
+            ('Precision', 'precision'),
+            ('Recall', 'recall')
+        ]),
+        ("📏 Scale-specific mAP", [
+            ('mAP (small)', 'map_small'),
+            ('mAP (medium)', 'map_medium'),
+            ('mAP (large)', 'map_large')
+        ]),
+        ("🎯 Average Recall (AR)", [
+            ('AR@1', 'ar@1'),
+            ('AR@10', 'ar@10'),
+            ('AR@100', 'ar@100')
+        ]),
+        ("📏 Scale-specific AR", [
+            ('AR (small)', 'ar_small'),
+            ('AR (medium)', 'ar_medium'),
+            ('AR (large)', 'ar_large')
+        ])
     ]
     
-    for label, key in metrics:
-        row = f"{label:<15}"
-        for model in models_data:
-            all_res = next((item for item in model['data']['class_map'][split] if item['class'] == 'all'), None)
-            val = all_res[key] if all_res else 0.0
-            row += f" | {val:^{name_width}.4f}"
-        print(row)
-    print("="*120 + "\n")
+    # Print metrics by groups
+    for group_name, metrics in metric_groups:
+        print(f"\n{group_name}")
+        print("-" * len(header))
+        
+        for label, key in metrics:
+            # Check if metric exists
+            if key not in first_all:
+                continue
+                
+            row = f"{label:<20}"
+            for model in models_data:
+                all_res = next((item for item in model['data']['class_map'][split] if item['class'] == 'all'), None)
+                val = all_res.get(key, 0.0) if all_res else 0.0
+                row += f" | {val:^{name_width}.4f}"
+            print(row)
+    
+    print("="*140 + "\n")
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize training results for multiple models')
@@ -222,7 +392,7 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n🚀 Generarting comparison visualizations...")
+    print("\n🚀 Generating comparison visualizations...")
     
     # 1. Print Summary Table
     print_summary(models_data, split='test')
@@ -230,6 +400,8 @@ def main():
     # 2. Plot Charts
     plot_bar_comparison(models_data, output_dir, split='test')
     plot_radar_comparison(models_data, output_dir, split='test')
+    plot_scale_metrics(models_data, output_dir, split='test')
+    plot_ar_metrics(models_data, output_dir, split='test')
     
     print(f"\n✨ Comparison Complete! Results saved to: {output_dir.absolute()}")
 
