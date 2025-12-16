@@ -6,13 +6,13 @@ model = RFDETRBase()
 
 model.train(
     dataset_file='coco',
-    dataset_dir='/home/fyb/datasets/RSOD_cocoFormat',
-    coco_path='/home/fyb/datasets/RSOD_cocoFormat',
+    dataset_dir='/root/RSOD_cocoFormat/',
+    coco_path='/root/RSOD_cocoFormat/',
     epochs=50,
     batch_size=12,
     grad_accum_steps=2,
     lr=1e-4,
     num_workers=2,
-    output_dir='results/1baseline',
+    output_dir='results/1baseline_RSOD',
     
 )
