@@ -62,6 +62,29 @@ class RFDETR:
         self._optimized_batch_size = None
         self._optimized_resolution = None
         self._optimized_dtype = None
+        
+        # 如果用户指定了自定义类别数，且与预训练权重不同，则重新初始化分类头
+        self._maybe_reinitialize_detection_head()
+    
+    def _maybe_reinitialize_detection_head(self):
+        """
+        检查并重新初始化分类头（如果需要）。
+        当用户指定的 num_classes 与预训练权重不同时调用。
+        """
+        if self.model_config.num_classes == 90:
+            # 默认 COCO 类别数，不需要重新初始化
+            return
+        
+        # 目标分类头维度 = num_classes + 1 (背景类)
+        target_head_dim = self.model_config.num_classes + 1
+        
+        try:
+            actual_head_dim = self.model.model.class_embed.weight.shape[0]
+            if actual_head_dim != target_head_dim:
+                print(f"🔄 初始化时重新调整分类头: {actual_head_dim} 维 -> {target_head_dim} 维 ({self.model_config.num_classes} 类 + 1 背景)")
+                self.model.reinitialize_detection_head(target_head_dim)
+        except Exception as e:
+            pass  # 如果无法访问分类头，跳过
 
     def maybe_download_pretrain_weights(self):
         """
