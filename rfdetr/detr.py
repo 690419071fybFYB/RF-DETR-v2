@@ -133,13 +133,67 @@ class RFDETR:
                 class_names = [c["name"] for c in anns["categories"] if c["supercategory"] != "none"]
                 self.model.class_names = class_names
         elif config.dataset_file == "coco":
-            class_names = COCO_CLASSES
-            num_classes = 90
+            # 如果用户明确指定了 num_classes（通过 model_config 或 kwargs），使用用户的值
+            # 否则使用默认的 COCO 90 类
+            if self.model_config.num_classes != 90:
+                # 用户在创建模型时指定了自定义类别数
+                num_classes = self.model_config.num_classes
+                # 尝试从数据集标注文件中读取类别名称
+                try:
+                    ann_file = os.path.join(kwargs.get('coco_path', config.dataset_dir), 
+                                           'annotations', 'instances_train2017.json')
+                    with open(ann_file, 'r') as f:
+                        anns = json.load(f)
+                        class_names = [c["name"] for c in sorted(anns["categories"], key=lambda x: x["id"])]
+                        self.model.class_names = class_names
+                        print(f"✅ 使用自定义类别数: {num_classes}, 类别: {class_names}")
+                except:
+                    # 如果读取失败，使用默认类别名
+                    class_names = [f"class_{i}" for i in range(num_classes)]
+                    print(f"✅ 使用自定义类别数: {num_classes}")
+            elif 'num_classes' in kwargs and kwargs['num_classes'] != 90:
+                # 用户在 train() 方法中指定了自定义类别数
+                num_classes = kwargs['num_classes']
+                try:
+                    ann_file = os.path.join(kwargs.get('coco_path', config.dataset_dir), 
+                                           'annotations', 'instances_train2017.json')
+                    with open(ann_file, 'r') as f:
+                        anns = json.load(f)
+                        class_names = [c["name"] for c in sorted(anns["categories"], key=lambda x: x["id"])]
+                        self.model.class_names = class_names
+                        print(f"✅ 使用自定义类别数: {num_classes}, 类别: {class_names}")
+                except:
+                    class_names = [f"class_{i}" for i in range(num_classes)]
+                    print(f"✅ 使用自定义类别数: {num_classes}")
+            else:
+                # 默认使用 COCO 90 类
+                class_names = COCO_CLASSES
+                num_classes = 90
         else:
             raise ValueError(f"Invalid dataset file: {config.dataset_file}")
 
+
+        # 检查是否需要重新初始化分类头
+        # 注意：分类头的实际维度是 num_classes + 1（包含背景类）
+        # 1. 配置的类别数与目标类别数不同
+        # 2. 或者实际模型的分类头形状与目标类别数不匹配（处理预训练权重的情况）
+        target_head_dim = num_classes + 1  # 实际分类头维度 = 目标类别数 + 1 (背景类)
+        need_reinit = False
         if self.model_config.num_classes != num_classes:
-            self.model.reinitialize_detection_head(num_classes)
+            need_reinit = True
+        else:
+            # 检查实际模型的分类头形状
+            try:
+                actual_head_dim = self.model.model.class_embed.weight.shape[0]
+                if actual_head_dim != target_head_dim:
+                    need_reinit = True
+                    print(f"⚠️  检测到分类头形状不匹配: 模型为 {actual_head_dim} 维，目标为 {target_head_dim} 维 ({num_classes} 类 + 1 背景)")
+            except:
+                pass
+        
+        if need_reinit:
+            print(f"🔄 重新初始化分类头: {num_classes} 类 + 1 背景 = {target_head_dim} 维")
+            self.model.reinitialize_detection_head(target_head_dim)
         
         train_config = config.dict()
         model_config = self.model_config.dict()
