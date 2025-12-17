@@ -11,8 +11,7 @@
 set -e
 
 # 切换到项目目录
-cd /home/fyb/mydir/rf-detr-origin/rf-detr
-
+cd /root/RF-DETR-v2
 # 激活环境（如果需要）
 # source /home/fyb/envs/torch-rfdetr-v2/bin/activate
 
@@ -30,21 +29,21 @@ echo ""
 
 if [ "$MODE" == "baseline" ]; then
     echo "🚀 启动基线训练..."
-    python3 experiemnts/scripts/train_soda_baseline.py
+    python3 experiemnts/scripts/6train_soda_baseline.py
 
 elif [ "$MODE" == "density" ]; then
     echo "🚀 启动密度引导训练..."
-    python3 experiemnts/scripts/train_soda_density.py
+    python3 experiemnts/scripts/6train_soda_density.py
 
 elif [ "$MODE" == "both" ]; then
     echo "🚀 启动基线训练..."
-    python3 experiemnts/scripts/train_soda_baseline.py
+    python3 experiemnts/scripts/6train_soda_baseline.py
     
     echo ""
     echo "✅ 基线训练完成！"
     echo ""
     echo "🚀 启动密度引导训练..."
-    python3 experiemnts/scripts/train_soda_density.py
+    python3 experiemnts/scripts/6train_soda_density.py
     
     echo ""
     echo "✅ 所有训练完成！"
