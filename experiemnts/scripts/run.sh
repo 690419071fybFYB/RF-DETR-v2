@@ -15,3 +15,5 @@ echo "[3/3] 运行实验3..."
 python /root/RF-DETR-v2/experiemnts/scripts/303_density_guided_improved_RSOD.py
 
 echo "✅ 所有实验完成！"
+
+
